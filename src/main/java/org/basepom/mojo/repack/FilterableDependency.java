@@ -26,46 +26,46 @@ import org.apache.maven.plugins.annotations.Parameter;
  */
 abstract class FilterableDependency {
 
-	/**
-	 * The groupId of the artifact to exclude.
-	 */
-	@Parameter(required = true)
-	private String groupId;
+    /**
+     * The groupId of the artifact to exclude.
+     */
+    @Parameter(required = true)
+    private String groupId;
 
-	/**
-	 * The artifactId of the artifact to exclude.
-	 */
-	@Parameter(required = true)
-	private String artifactId;
+    /**
+     * The artifactId of the artifact to exclude.
+     */
+    @Parameter(required = true)
+    private String artifactId;
 
-	/**
-	 * The classifier of the artifact to exclude.
-	 */
-	@Parameter
-	private String classifier;
+    /**
+     * The classifier of the artifact to exclude.
+     */
+    @Parameter
+    private String classifier;
 
-	String getGroupId() {
-		return this.groupId;
-	}
+    String getGroupId() {
+        return this.groupId;
+    }
 
-	void setGroupId(String groupId) {
-		this.groupId = groupId;
-	}
+    void setGroupId(String groupId) {
+        this.groupId = groupId;
+    }
 
-	String getArtifactId() {
-		return this.artifactId;
-	}
+    String getArtifactId() {
+        return this.artifactId;
+    }
 
-	void setArtifactId(String artifactId) {
-		this.artifactId = artifactId;
-	}
+    void setArtifactId(String artifactId) {
+        this.artifactId = artifactId;
+    }
 
-	String getClassifier() {
-		return this.classifier;
-	}
+    String getClassifier() {
+        return this.classifier;
+    }
 
-	void setClassifier(String classifier) {
-		this.classifier = classifier;
-	}
+    void setClassifier(String classifier) {
+        this.classifier = classifier;
+    }
 
 }

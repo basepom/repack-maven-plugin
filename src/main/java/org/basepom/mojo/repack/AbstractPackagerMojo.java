@@ -96,7 +96,7 @@ public abstract class AbstractPackagerMojo extends AbstractDependencyFilterMojo 
      * @since 1.3.0
      */
     @Parameter(property = "spring-boot.repackage.excludeDevtools", defaultValue = "true")
-    private boolean excludeDevtools = true;
+    private final boolean excludeDevtools = true;
 
     /**
      * Include system scoped dependencies.

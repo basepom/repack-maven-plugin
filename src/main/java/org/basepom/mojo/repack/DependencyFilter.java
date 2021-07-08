@@ -34,51 +34,51 @@ import org.apache.maven.shared.artifact.filter.collection.ArtifactsFilter;
  */
 public abstract class DependencyFilter extends AbstractArtifactsFilter {
 
-	private final List<? extends FilterableDependency> filters;
+    private final List<? extends FilterableDependency> filters;
 
-	/**
-	 * Create a new instance with the list of {@link FilterableDependency} instance(s) to
-	 * use.
-	 * @param dependencies the source dependencies
-	 */
-	public DependencyFilter(List<? extends FilterableDependency> dependencies) {
-		this.filters = dependencies;
-	}
+    /**
+     * Create a new instance with the list of {@link FilterableDependency} instance(s) to use.
+     *
+     * @param dependencies the source dependencies
+     */
+    public DependencyFilter(List<? extends FilterableDependency> dependencies) {
+        this.filters = dependencies;
+    }
 
-	@Override
-	public Set<Artifact> filter(Set<Artifact> artifacts) throws ArtifactFilterException {
-		Set<Artifact> result = new HashSet<>();
-		for (Artifact artifact : artifacts) {
-			if (!filter(artifact)) {
-				result.add(artifact);
-			}
-		}
-		return result;
-	}
+    @Override
+    public Set<Artifact> filter(Set<Artifact> artifacts) throws ArtifactFilterException {
+        Set<Artifact> result = new HashSet<>();
+        for (Artifact artifact : artifacts) {
+            if (!filter(artifact)) {
+                result.add(artifact);
+            }
+        }
+        return result;
+    }
 
-	protected abstract boolean filter(Artifact artifact);
+    protected abstract boolean filter(Artifact artifact);
 
-	/**
-	 * Check if the specified {@link org.apache.maven.artifact.Artifact} matches the
-	 * specified {@link FilterableDependency}. Returns
-	 * {@code true} if it should be excluded
-	 * @param artifact the Maven {@link Artifact}
-	 * @param dependency the {@link FilterableDependency}
-	 * @return {@code true} if the artifact matches the dependency
-	 */
-	protected final boolean equals(Artifact artifact, FilterableDependency dependency) {
-		if (!dependency.getGroupId().equals(artifact.getGroupId())) {
-			return false;
-		}
-		if (!dependency.getArtifactId().equals(artifact.getArtifactId())) {
-			return false;
-		}
-		return (dependency.getClassifier() == null
-				|| artifact.getClassifier() != null && dependency.getClassifier().equals(artifact.getClassifier()));
-	}
+    /**
+     * Check if the specified {@link org.apache.maven.artifact.Artifact} matches the specified {@link FilterableDependency}. Returns {@code true} if it should
+     * be excluded
+     *
+     * @param artifact   the Maven {@link Artifact}
+     * @param dependency the {@link FilterableDependency}
+     * @return {@code true} if the artifact matches the dependency
+     */
+    protected final boolean equals(Artifact artifact, FilterableDependency dependency) {
+        if (!dependency.getGroupId().equals(artifact.getGroupId())) {
+            return false;
+        }
+        if (!dependency.getArtifactId().equals(artifact.getArtifactId())) {
+            return false;
+        }
+        return (dependency.getClassifier() == null
+                || artifact.getClassifier() != null && dependency.getClassifier().equals(artifact.getClassifier()));
+    }
 
-	protected final List<? extends FilterableDependency> getFilters() {
-		return this.filters;
-	}
+    protected final List<? extends FilterableDependency> getFilters() {
+        return this.filters;
+    }
 
 }
