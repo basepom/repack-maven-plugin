@@ -1,11 +1,9 @@
 /*
- * Copyright 2012-2021 the original author or authors.
- *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,104 +11,154 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.basepom.mojo.repack;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.attribute.FileTime;
 import java.time.OffsetDateTime;
-import java.util.List;
+import java.util.Arrays;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSet;
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.model.Dependency;
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.project.MavenProject;
+import org.apache.maven.project.MavenProjectHelper;
+import org.apache.maven.shared.artifact.filter.collection.ArtifactFilterException;
+import org.apache.maven.shared.artifact.filter.collection.FilterArtifacts;
 import org.springframework.boot.loader.tools.DefaultLaunchScript;
 import org.springframework.boot.loader.tools.LaunchScript;
+import org.springframework.boot.loader.tools.Layers;
 import org.springframework.boot.loader.tools.LayoutFactory;
 import org.springframework.boot.loader.tools.Libraries;
 import org.springframework.boot.loader.tools.Repackager;
 
 /**
- * Repackage existing JAR and WAR archives so that they can be executed from the command line using {@literal java -jar}. With <code>layout=NONE</code> can also
- * be used simply to package a JAR with nested dependencies (and no main class, so not executable).
- *
- * @author Phillip Webb
- * @author Dave Syer
- * @author Stephane Nicoll
- * @author Björn Lindström
- * @author Scott Frederick
- * @since 1.0.0
+ * Repack archives for execution using {@literal java -jar}. Can also be used to repack a jar with nested dependencies by using <code>layout=NONE</code>.
  */
-@Mojo(name = "repackage", defaultPhase = LifecyclePhase.PACKAGE, requiresProject = true, threadSafe = true,
+@Mojo(name = "repack", defaultPhase = LifecyclePhase.PACKAGE, requiresProject = true, threadSafe = true,
         requiresDependencyResolution = ResolutionScope.COMPILE_PLUS_RUNTIME,
         requiresDependencyCollection = ResolutionScope.COMPILE_PLUS_RUNTIME)
-public class RepackMojo extends AbstractPackagerMojo {
+public final class RepackMojo extends AbstractMojo {
 
     private static final Pattern WHITE_SPACE_PATTERN = Pattern.compile("\\s+");
 
+    private static final PluginLog LOG = new PluginLog(RepackMojo.class);
+
+    @Parameter(defaultValue = "${project}", readonly = true, required = true)
+    public MavenProject project;
+
+    @Parameter(defaultValue = "${session}", readonly = true, required = true)
+    public MavenSession session;
+
+    @Component
+    public MavenProjectHelper projectHelper;
+
+    /**
+     * The name of the main class. If not specified the first compiled class found that contains a {@code main} method will be used.
+     */
+    @Parameter(property = "repack.main-class")
+    public String mainClass = null;
+
+    /**
+     * Collection of artifact definitions to include.
+     */
+    @Parameter(alias = "includes")
+    public Set<DependencyDefinition> includedDependencies = ImmutableSet.of();
+
+    /**
+     * Collection of artifact definitions to exclude.
+     */
+    @Parameter(alias = "excludedDependencies")
+    public Set<DependencyDefinition> excludedDependencies = ImmutableSet.of();
+
+    /**
+     * Include system scoped dependencies.
+     */
+    @Parameter(defaultValue = "false", property = "repack.include-system-scope")
+    public boolean includeSystemScope = false;
+
+    /**
+     * Include provided scoped dependencies.
+     */
+    @Parameter(defaultValue = "false", property = "repack.include-provided-scope")
+    public boolean includeProvidedScope = false;
+
+    /**
+     * Include optional dependencies
+     */
+    @Parameter(defaultValue = "false", property = "repack.include-optional")
+    public boolean includeOptional = false;
+
     /**
      * Directory containing the generated archive.
-     *
-     * @since 1.0.0
      */
-    @Parameter(defaultValue = "${project.build.directory}", required = true)
-    private File outputDirectory;
+    @Parameter(defaultValue = "${project.build.directory}", required = true, property = "repack.output-directory")
+    public File outputDirectory;
 
     /**
      * Name of the generated archive.
-     *
-     * @since 1.0.0
      */
-    @Parameter(defaultValue = "${project.build.finalName}", readonly = true)
-    private String finalName;
+    @Parameter(defaultValue = "${project.build.finalName}", property = "repack.final-name")
+    public String finalName;
 
     /**
      * Skip the execution.
-     *
-     * @since 1.2.0
      */
-    @Parameter(property = "spring-boot.repackage.skip", defaultValue = "false")
-    private boolean skip;
+    @Parameter(defaultValue = "false", property = "repack.skip")
+    public boolean skip = false;
 
     /**
-     * Classifier to add to the repackaged archive. If not given, the main artifact will be replaced by the repackaged archive. If given, the classifier will
-     * also be used to determine the source archive to repackage: if an artifact with that classifier already exists, it will be used as source and replaced. If
-     * no such artifact exists, the main artifact will be used as source and the repackaged archive will be attached as a supplemental artifact with that
-     * classifier. Attaching the artifact allows to deploy it alongside to the original one, see <a href= "https://maven.apache.org/plugins/maven-deploy-plugin/examples/deploying-with-classifiers.html"
-     * >the Maven documentation for more details</a>.
-     *
-     * @since 1.0.0
+     * Silence all non-output and non-error messages.
+     */
+    @Parameter(defaultValue = "false", property = "repack.quiet")
+    public boolean quiet = false;
+
+    /**
+     * Do a summary report.
+     */
+    @Parameter(defaultValue = "true", property = "repack.report")
+    public boolean report = true;
+
+    /**
+     * Classifier to add to the repacked archive. Use the blank string to replace the main artifact.
+     */
+    @Parameter(defaultValue = "repacked", property = "repack.classifier")
+    public String repackClassifier = "repacked";
+
+    /**
+     * Attach the repacked archive to the build cycle.
+     */
+    @Parameter(defaultValue = "true", property = "repack.artifact-attached")
+    public boolean repackArtifactAttached = true;
+
+    /**
+     * A list of the libraries that must be unpacked at runtime (do not work within the fat jar).
      */
     @Parameter
-    private String classifier;
+    public Set<DependencyDefinition> runtimeUnpackedDependencies = ImmutableSet.of();
 
     /**
-     * Attach the repackaged archive to be installed into your local Maven repository or deployed to a remote repository. If no classifier has been configured,
-     * it will replace the normal jar. If a {@code classifier} has been configured such that the normal jar and the repackaged jar are different, it will be
-     * attached alongside the normal jar. When the property is set to {@code false}, the repackaged archive will not be installed or deployed.
-     *
-     * @since 1.4.0
-     */
-    @Parameter(defaultValue = "true")
-    private final boolean attach = true;
-
-    /**
-     * A list of the libraries that must be unpacked from fat jars in order to run. Specify each library as a {@code <dependency>} with a {@code <groupId>} and
-     * a {@code <artifactId>} and they will be unpacked at runtime.
-     *
-     * @since 1.1.0
+     * A list of optional libraries that should be included even if optional dependencies are not included by default.
      */
     @Parameter
-    private List<Dependency> requiresUnpack;
+    public Set<DependencyDefinition> optionalDependencies = ImmutableSet.of();
 
     /**
      * Make a fully executable jar for *nix machines by prepending a launch script to the jar.
@@ -118,153 +166,285 @@ public class RepackMojo extends AbstractPackagerMojo {
      * Currently, some tools do not accept this format so you may not always be able to use this technique. For example, {@code jar -xf} may silently fail to
      * extract a jar or war that has been made fully-executable. It is recommended that you only enable this option if you intend to execute it directly, rather
      * than running it with {@code java -jar} or deploying it to a servlet container.
-     *
-     * @since 1.3.0
      */
-    @Parameter(defaultValue = "false")
-    private boolean executable;
+    @Parameter(defaultValue = "false", property = "repack.executable")
+    public boolean executable = false;
 
     /**
      * The embedded launch script to prepend to the front of the jar if it is fully executable. If not specified the 'Spring Boot' default script will be used.
-     *
-     * @since 1.3.0
      */
-    @Parameter
-    private File embeddedLaunchScript;
+    @Parameter(property = "repack.launch-script")
+    public File launchScript = null;
 
     /**
-     * Properties that should be expanded in the embedded launch script.
-     *
-     * @since 1.3.0
+     * If true, includes the same properties as the {@code spring-boot:repackage} goal (initInfoProvides, initInfoShortDescription, initInfoDescription).
+     * <p>Note that this is automatically set to true if the launch script name is unset (using the default launcher script).</p>
+     */
+    @Parameter(defaultValue = "false", property = "repack.include-default-launch-script-properties")
+    public boolean includeDefaultLaunchScriptProperties = false;
+
+    /**
+     * Additional properties that should be expanded in the launch script.
      */
     @Parameter
-    private Properties embeddedLaunchScriptProperties;
+    public Properties launchScriptProperties = new Properties();
 
     /**
      * Timestamp for reproducible output archive entries, either formatted as ISO 8601 (<code>yyyy-MM-dd'T'HH:mm:ssXXX</code>) or an {@code int} representing
      * seconds since the epoch.
-     *
-     * @since 2.3.0
      */
-    @Parameter(defaultValue = "${project.build.outputTimestamp}")
-    private String outputTimestamp;
+    @Parameter(defaultValue = "${project.build.outputTimestamp}", property = "repack.output-timestamp")
+    public String outputTimestamp;
 
     /**
      * The type of archive (which corresponds to how the dependencies are laid out inside it). Possible values are {@code JAR}, {@code WAR}, {@code ZIP}, {@code
-     * DIR}, {@code NONE}. Defaults to a guess based on the archive type.
-     *
-     * @since 1.0.0
+     * DIR}, {@code NONE}. Defaults to {@code JAR}.
      */
-    @Parameter(property = "spring-boot.repackage.layout")
-    private LayoutType layout;
+    @Parameter(defaultValue = "JAR", property = "repack.layout")
+    public LayoutType layout = LayoutType.JAR;
 
     /**
      * The layout factory that will be used to create the executable archive if no explicit layout is set. Alternative layouts implementations can be provided
      * by 3rd parties.
-     *
-     * @since 1.5.0
      */
     @Parameter
-    private LayoutFactory layoutFactory;
+    public LayoutFactory layoutFactory = null;
 
-    /**
-     * Return the type of archive that should be packaged by this MOJO.
-     *
-     * @return the value of the {@code layout} parameter, or {@code null} if the parameter is not provided
-     */
-    @Override
-    protected LayoutType getLayout() {
-        return this.layout;
+    // called by maven
+    public void setIncludedDependencies(final String[] includedDependencies) {
+        checkNotNull(includedDependencies, "includedDependencies is null");
+
+        this.includedDependencies = Arrays.stream(includedDependencies)
+                .map(DependencyDefinition::new)
+                .collect(toImmutableSet());
     }
 
-    /**
-     * Return the layout factory that will be used to determine the {@link AbstractPackagerMojo.LayoutType} if no explicit layout is set.
-     *
-     * @return the value of the {@code layoutFactory} parameter, or {@code null} if the parameter is not provided
-     */
-    @Override
-    protected LayoutFactory getLayoutFactory() {
-        return this.layoutFactory;
+    // called by maven
+    public void setExcludedDependencies(final String[] excludedDependencies) {
+        checkNotNull(excludedDependencies, "excludedDependencies is null");
+
+        this.excludedDependencies = Arrays.stream(excludedDependencies)
+                .map(DependencyDefinition::new)
+                .collect(toImmutableSet());
+    }
+
+    // called by maven
+    public void setRuntimeUnpackedDependencies(final String[] runtimeUnpackedDependencies) {
+        checkNotNull(runtimeUnpackedDependencies, "runtimeUnpackDependencies is null");
+
+        this.runtimeUnpackedDependencies = Arrays.stream(runtimeUnpackedDependencies)
+                .map(DependencyDefinition::new)
+                .collect(toImmutableSet());
+    }
+
+    // called by maven
+    public void setOptionalDependencies(final String[] optionalDependencies) {
+        checkNotNull(optionalDependencies, "optionalDependencies is null");
+
+        this.optionalDependencies = Arrays.stream(optionalDependencies)
+                .map(DependencyDefinition::new)
+                .collect(toImmutableSet());
     }
 
     @Override
-    public void execute() throws MojoExecutionException, MojoFailureException {
-        if (this.project.getPackaging().equals("pom")) {
-            getLog().debug("repackage goal could not be applied to pom project.");
+    public void execute() throws MojoExecutionException {
+
+        if (skip) {
+            LOG.report(quiet, "Skipping plugin execution");
             return;
         }
-        if (this.skip) {
-            getLog().debug("skipping repackaging as per configuration.");
+
+        if ("pom".equals(project.getPackaging())) {
+            LOG.report(quiet, "Ignoring POM project");
             return;
         }
-        repackage();
-    }
 
-    private void repackage() throws MojoExecutionException {
-        Artifact source = getSourceArtifact(this.classifier);
-        File target = getTargetFile(this.finalName, this.classifier, this.outputDirectory);
-        Repackager repackager = getRepackager(source.getFile());
-        Libraries libraries = getLibraries(this.requiresUnpack);
+        checkState(this.outputDirectory != null, "output directory was unset!");
+        checkState(this.outputDirectory.exists(), "output directory '%s' does not exist!", this.outputDirectory.getAbsolutePath());
 
-        try {
-            libraries.doWithLibraries(l -> {
-                System.out.println("Including in artifact: " + l.getCoordinates());
-            });
-        } catch (IOException e) {
-            e.printStackTrace();
+        if (this.finalName == null) {
+            this.finalName = project.getArtifactId() + '-' + project.getVersion();
+            LOG.report(quiet, "Final name unset, falling back to %s", this.finalName);
+        }
+
+        if (repackClassifier.isEmpty()) {
+            if (project.getArtifact().getClassifier() == null) {
+                LOG.report(quiet, "Repacked archive will replace main artifact!");
+            } else {
+                LOG.report(quiet, "Repacked archive will have no classifier (main artifact has %s classifier)", project.getArtifact().getClassifier());
+            }
+        } else {
+            if (repackClassifier.equals(project.getArtifact().getClassifier())) {
+                LOG.report(quiet, "Repacked archive will replace main artifact with classifier %s!", repackClassifier);
+            } else {
+                LOG.report(quiet, "Repacked archive will use classifier '%s', main artifact has %s", repackClassifier,
+                        project.getArtifact().getClassifier() == null ? "no classifier" : "classifier " + project.getArtifact().getClassifier());
+            }
         }
 
         try {
-            LaunchScript launchScript = getLaunchScript();
-            repackager.repackage(target, libraries, launchScript, parseOutputTimestamp());
+            Artifact source = project.getArtifact();
+
+            Repackager repackager = new Repackager(source.getFile());
+
+            if (!mainClass.isEmpty()) {
+                repackager.setMainClass(mainClass);
+            } else {
+                repackager.addMainClassTimeoutWarningListener(new LoggingMainClassTimeoutWarningListener());
+            }
+
+            if (layoutFactory != null) {
+                LOG.report(quiet, "Using %s Layout Factory to repack the %s artifact", layoutFactory.getClass().getSimpleName(), project.getArtifact());
+                repackager.setLayoutFactory(layoutFactory);
+            } else if (layout != null) {
+                LOG.report(quiet, "Using %s Layout to repack the %s artifact", layout, project.getArtifact());
+                repackager.setLayout(layout.layout());
+            } else {
+                LOG.warn("Neither Layout Factory nor Layout defined, resulting JAR may be non-functional.");
+            }
+
+            repackager.setLayers(Layers.IMPLICIT);
+            // tools need spring framework dependencies which are not guaranteed to be there. So turn this off.
+            repackager.setIncludeRelevantJarModeJars(false);
+
+            File targetFile = getTargetFile();
+            Libraries libraries = getLibraries();
+            LaunchScript launchScript = determineLaunchScript();
+            FileTime outputFileTimestamp = parseOutputTimestamp();
+
+            repackager.repackage(targetFile, libraries, launchScript, outputFileTimestamp);
+
+            boolean repackReplacesSource = source.getFile().equals(targetFile);
+
+            if (repackArtifactAttached) {
+                if (repackReplacesSource) {
+                    source.setFile(targetFile);
+                } else {
+                    projectHelper.attachArtifact(project, project.getPackaging(), Strings.emptyToNull(repackClassifier), targetFile);
+                }
+            } else if (repackReplacesSource && repackager.getBackupFile().exists()) {
+                source.setFile(repackager.getBackupFile());
+            } else if (!repackClassifier.isEmpty()) {
+                LOG.report(quiet, "Created repacked archive %s with classifier %s!", targetFile, repackClassifier);
+            }
+
+            if (report) {
+                Reporter.report(quiet, source, repackClassifier);
+            }
         } catch (IOException ex) {
             throw new MojoExecutionException(ex.getMessage(), ex);
         }
-        updateArtifact(source, target, repackager.getBackupFile());
+    }
+
+    private File getTargetFile() {
+        StringBuilder targetFileName = new StringBuilder();
+
+        targetFileName.append(finalName);
+
+        if (!repackClassifier.isEmpty()) {
+            targetFileName.append('-').append(repackClassifier);
+        }
+
+        targetFileName.append('.').append(project.getArtifact().getArtifactHandler().getExtension());
+
+        return new File(outputDirectory, targetFileName.toString());
+    }
+
+    /**
+     * Return {@link Libraries} that the packager can use.
+     */
+    private Libraries getLibraries() throws MojoExecutionException {
+
+        try {
+            Set<Artifact> artifacts = ImmutableSet.copyOf(project.getArtifacts());
+            Set<Artifact> includedArtifacts = ImmutableSet.copyOf(buildFilters().filter(artifacts));
+            return new ArtifactsLibraries(quiet, artifacts, includedArtifacts, session.getProjects(), runtimeUnpackedDependencies);
+        } catch (ArtifactFilterException ex) {
+            throw new MojoExecutionException(ex.getMessage(), ex);
+        }
+    }
+
+    private FilterArtifacts buildFilters() {
+
+        FilterArtifacts filters = new FilterArtifacts();
+
+        // remove all system scope artifacts
+        if (!includeSystemScope) {
+            filters.addFilter(new ScopeExclusionFilter(Artifact.SCOPE_SYSTEM));
+        }
+
+        // remove all provided scope artifacts
+        if (!includeProvidedScope) {
+            filters.addFilter(new ScopeExclusionFilter(Artifact.SCOPE_PROVIDED));
+        }
+
+        // if optionals are not included by default, filter out anything that is not included
+        // through a matcher
+        if (!includeOptional) {
+            filters.addFilter(new OptionalArtifactFilter(optionalDependencies));
+        }
+
+        // add includes filter. If no includes are given, don't add a filter (everything is included)
+        if (!includedDependencies.isEmpty()) {
+            // an explicit include list given.
+            filters.addFilter(new DependencyDefinitionFilter(includedDependencies, true));
+        }
+
+        // add excludes filter. If no excludes are given, don't add a filter (nothing gets excluded)
+        if (!excludedDependencies.isEmpty()) {
+            filters.addFilter(new DependencyDefinitionFilter(excludedDependencies, false));
+        }
+
+        return filters;
     }
 
     private FileTime parseOutputTimestamp() {
         // Maven ignore a single-character timestamp as it is "useful to override a full
         // value during pom inheritance"
-        if (this.outputTimestamp == null || this.outputTimestamp.length() < 2) {
+        if (outputTimestamp == null || outputTimestamp.length() < 2) {
             return null;
         }
-        return FileTime.from(getOutputTimestampEpochSeconds(), TimeUnit.SECONDS);
-    }
 
-    private long getOutputTimestampEpochSeconds() {
+        long timestamp;
+
         try {
-            return Long.parseLong(this.outputTimestamp);
+            timestamp = Long.parseLong(outputTimestamp);
         } catch (NumberFormatException ex) {
-            return OffsetDateTime.parse(this.outputTimestamp).toInstant().getEpochSecond();
+            timestamp = OffsetDateTime.parse(outputTimestamp).toInstant().getEpochSecond();
         }
+
+        return FileTime.from(timestamp, TimeUnit.SECONDS);
     }
 
-    private Repackager getRepackager(File source) {
-        return getConfiguredPackager(() -> new Repackager(source));
-    }
+    private LaunchScript determineLaunchScript() throws IOException {
 
-    private LaunchScript getLaunchScript() throws IOException {
-        if (this.executable || this.embeddedLaunchScript != null) {
-            return new DefaultLaunchScript(this.embeddedLaunchScript, buildLaunchScriptProperties());
+        if (launchScript != null) {
+            LOG.report(quiet, "Using custom launch script: %s", launchScript);
+            return new DefaultLaunchScript(launchScript, buildLaunchScriptProperties());
+        } else if (executable) {
+            LOG.report(quiet, "Using default 'launch.script',%n" +
+                    "see https://docs.spring.io/spring-boot/docs/current/reference/html/deployment.html#deployment.installing.nix-services.script-customization for additional customization information");
+            return new DefaultLaunchScript(null, buildLaunchScriptProperties());
+        } else {
+            return null;
         }
-        return null;
     }
 
     private Properties buildLaunchScriptProperties() {
-        Properties properties = new Properties();
-        if (this.embeddedLaunchScriptProperties != null) {
-            properties.putAll(this.embeddedLaunchScriptProperties);
+        Properties properties = new Properties(launchScriptProperties);
+
+        if (launchScript == null || includeDefaultLaunchScriptProperties) {
+            putIfMissing(properties, "initInfoProvides", project.getArtifactId());
+            putIfMissing(properties, "initInfoShortDescription", project.getName(), project.getArtifactId());
+            putIfMissing(properties, "initInfoDescription", removeLineBreaks(project.getDescription()), project.getName(), project.getArtifactId());
         }
-        putIfMissing(properties, "initInfoProvides", this.project.getArtifactId());
-        putIfMissing(properties, "initInfoShortDescription", this.project.getName(), this.project.getArtifactId());
-        putIfMissing(properties, "initInfoDescription", removeLineBreaks(this.project.getDescription()),
-                this.project.getName(), this.project.getArtifactId());
         return properties;
     }
 
     private String removeLineBreaks(String description) {
-        return (description != null) ? WHITE_SPACE_PATTERN.matcher(description).replaceAll(" ") : null;
+        return (description != null)
+                ? WHITE_SPACE_PATTERN.matcher(description).replaceAll(" ")
+                : null;
     }
 
     private void putIfMissing(Properties properties, String key, String... valueCandidates) {
@@ -277,30 +457,4 @@ public class RepackMojo extends AbstractPackagerMojo {
             }
         }
     }
-
-    private void updateArtifact(Artifact source, File target, File original) {
-        if (this.attach) {
-            attachArtifact(source, target);
-        } else if (source.getFile().equals(target) && original.exists()) {
-            String artifactId = (this.classifier != null) ? "artifact with classifier " + this.classifier
-                    : "main artifact";
-            getLog().info(String.format("Updating %s %s to %s", artifactId, source.getFile(), original));
-            source.setFile(original);
-        } else if (this.classifier != null) {
-            getLog().info("Creating repackaged archive " + target + " with classifier " + this.classifier);
-        }
-    }
-
-    private void attachArtifact(Artifact source, File target) {
-        if (this.classifier != null && !source.getFile().equals(target)) {
-            getLog().info("Attaching repackaged archive " + target + " with classifier " + this.classifier);
-            this.projectHelper.attachArtifact(this.project, this.project.getPackaging(), this.classifier, target);
-        } else {
-            String artifactId = (this.classifier != null) ? "artifact with classifier " + this.classifier
-                    : "main artifact";
-            getLog().info("Replacing " + artifactId + " with repackaged archive");
-            source.setFile(target);
-        }
-    }
-
 }

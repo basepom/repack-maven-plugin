@@ -1,11 +1,9 @@
 /*
- * Copyright 2012-2021 the original author or authors.
- *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,21 +11,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.basepom.mojo.repack;
+
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import com.google.common.collect.ImmutableMap;
 import org.apache.maven.artifact.Artifact;
-import org.apache.maven.model.Dependency;
-import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.project.MavenProject;
 import org.springframework.boot.loader.tools.Libraries;
 import org.springframework.boot.loader.tools.Library;
@@ -37,131 +33,92 @@ import org.springframework.boot.loader.tools.LibraryScope;
 
 /**
  * {@link Libraries} backed by Maven {@link Artifact}s.
- *
- * @author Phillip Webb
- * @author Andy Wilkinson
- * @author Stephane Nicoll
- * @author Scott Frederick
- * @since 1.0.0
  */
-public class ArtifactsLibraries implements Libraries {
+final class ArtifactsLibraries implements Libraries {
 
-    private static final Map<String, LibraryScope> SCOPES;
+    private static final PluginLog LOG = new PluginLog(ArtifactsLibraries.class);
 
-    static {
-        Map<String, LibraryScope> libraryScopes = new HashMap<>();
-        libraryScopes.put(Artifact.SCOPE_COMPILE, LibraryScope.COMPILE);
-        libraryScopes.put(Artifact.SCOPE_RUNTIME, LibraryScope.RUNTIME);
-        libraryScopes.put(Artifact.SCOPE_PROVIDED, LibraryScope.PROVIDED);
-        libraryScopes.put(Artifact.SCOPE_SYSTEM, LibraryScope.PROVIDED);
-        SCOPES = Collections.unmodifiableMap(libraryScopes);
-    }
+    private static final Map<String, LibraryScope> SCOPES = ImmutableMap.of(
+            Artifact.SCOPE_COMPILE, LibraryScope.COMPILE,
+            Artifact.SCOPE_RUNTIME, LibraryScope.RUNTIME,
+            Artifact.SCOPE_PROVIDED, LibraryScope.PROVIDED,
+            Artifact.SCOPE_SYSTEM, LibraryScope.PROVIDED);
 
+    private final boolean quiet;
     private final Set<Artifact> artifacts;
-
     private final Set<Artifact> includedArtifacts;
-
     private final Collection<MavenProject> localProjects;
+    private final Set<DependencyDefinition> runtimeUnpackedDependencies;
+    private final Set<String> duplicates = new HashSet<>();
 
-    private final Collection<Dependency> unpacks;
-
-    private final Log log;
-
-    /**
-     * Creates a new {@code ArtifactsLibraries} from the given {@code artifacts}.
-     *
-     * @param artifacts the artifacts to represent as libraries
-     * @param unpacks   artifacts that should be unpacked on launch
-     * @param log       the log
-     * @deprecated since 2.4.0 for removal in 2.6.0 in favor of {@link #ArtifactsLibraries(Set, Collection, Collection, Log)}
-     */
-    @Deprecated
-    public ArtifactsLibraries(Set<Artifact> artifacts, Collection<Dependency> unpacks, Log log) {
-        this(artifacts, Collections.emptyList(), unpacks, log);
-    }
-
-    /**
-     * Creates a new {@code ArtifactsLibraries} from the given {@code artifacts}.
-     *
-     * @param artifacts     the artifacts to represent as libraries
-     * @param localProjects projects for which {@link Library#isLocal() local} libraries should be created
-     * @param unpacks       artifacts that should be unpacked on launch
-     * @param log           the log
-     * @since 2.4.0
-     */
-    public ArtifactsLibraries(Set<Artifact> artifacts, Collection<MavenProject> localProjects,
-            Collection<Dependency> unpacks, Log log) {
-        this(artifacts, artifacts, localProjects, unpacks, log);
-    }
-
-    /**
-     * Creates a new {@code ArtifactsLibraries} from the given {@code artifacts}.
-     *
-     * @param artifacts         all artifacts that can be represented as libraries
-     * @param includedArtifacts the actual artifacts to include in the fat jar
-     * @param localProjects     projects for which {@link Library#isLocal() local} libraries should be created
-     * @param unpacks           artifacts that should be unpacked on launch
-     * @param log               the log
-     * @since 2.4.8
-     */
-    public ArtifactsLibraries(Set<Artifact> artifacts, Set<Artifact> includedArtifacts,
-            Collection<MavenProject> localProjects, Collection<Dependency> unpacks, Log log) {
-        this.artifacts = artifacts;
-        this.includedArtifacts = includedArtifacts;
-        this.localProjects = localProjects;
-        this.unpacks = unpacks;
-        this.log = log;
+    ArtifactsLibraries(boolean quiet,
+            Set<Artifact> artifacts,
+            Set<Artifact> includedArtifacts,
+            Collection<MavenProject> localProjects,
+            Set<DependencyDefinition> runtimeUnpackedDependencies) {
+        this.quiet = quiet;
+        this.artifacts = checkNotNull(artifacts, "artifacts is null");
+        this.includedArtifacts = checkNotNull(includedArtifacts, "includedArtifacts is null");
+        this.localProjects = checkNotNull(localProjects, "localProjects is null");
+        this.runtimeUnpackedDependencies = checkNotNull(runtimeUnpackedDependencies, "runtimeUnpackedDependencies is null");
     }
 
     @Override
     public void doWithLibraries(LibraryCallback callback) throws IOException {
-        Set<String> duplicates = getDuplicates(this.artifacts);
-        for (Artifact artifact : this.artifacts) {
-            String name = getFileName(artifact);
+
+        for (Artifact artifact : artifacts) {
+            String name = createFileName(artifact);
             File file = artifact.getFile();
+
             LibraryScope scope = SCOPES.get(artifact.getScope());
-            if (scope == null || file == null) {
+
+            if (scope == null) {
+                LOG.report(quiet, "Ignoring Dependency %s, scope is %s", artifact, artifact.getScope());
+                Reporter.addExcluded(artifact, "scope");
                 continue;
             }
+
+            if (file == null) {
+                LOG.report(quiet, "Ignoring Dependency %s, no file found!", artifact);
+                Reporter.addExcluded(artifact, "nofile");
+                continue;
+            }
+
             if (duplicates.contains(name)) {
-                this.log.debug("Duplicate found: " + name);
-                name = artifact.getGroupId() + "-" + name;
-                this.log.debug("Renamed to: " + name);
+                LOG.warn("Ignoring Dependency %s, ignoring multiple inclusions!", artifact);
+                continue;
             }
+
+            duplicates.add(name);
+
             LibraryCoordinates coordinates = new ArtifactLibraryCoordinates(artifact);
-            boolean unpackRequired = isUnpackRequired(artifact);
-            boolean local = isLocal(artifact);
-            boolean included = this.includedArtifacts.contains(artifact);
-            callback.library(new Library(name, file, scope, coordinates, unpackRequired, local, included));
-        }
-    }
-
-    private Set<String> getDuplicates(Set<Artifact> artifacts) {
-        Set<String> duplicates = new HashSet<>();
-        Set<String> seen = new HashSet<>();
-        for (Artifact artifact : artifacts) {
-            String fileName = getFileName(artifact);
-            if (artifact.getFile() != null && !seen.add(fileName)) {
-                duplicates.add(fileName);
+            boolean runtimeUnpacked = isRuntimeUnpacked(artifact);
+            if (runtimeUnpacked) {
+                Reporter.addRuntimeUnpacked(artifact);
             }
+
+            boolean local = isLocal(artifact);
+            boolean included = includedArtifacts.contains(artifact);
+
+            if (included) {
+                Reporter.addIncluded(artifact);
+            }
+
+            callback.library(new Library(name, file, scope, coordinates, runtimeUnpacked, local, included));
         }
-        return duplicates;
     }
 
-    private boolean isUnpackRequired(Artifact artifact) {
-        if (this.unpacks != null) {
-            for (Dependency unpack : this.unpacks) {
-                if (artifact.getGroupId().equals(unpack.getGroupId())
-                        && artifact.getArtifactId().equals(unpack.getArtifactId())) {
-                    return true;
-                }
+    private boolean isRuntimeUnpacked(Artifact artifact) {
+        for (DependencyDefinition runtimeUnpackedDependency : runtimeUnpackedDependencies) {
+            if (runtimeUnpackedDependency.matches(artifact)) {
+                return true;
             }
         }
         return false;
     }
 
     private boolean isLocal(Artifact artifact) {
-        for (MavenProject localProject : this.localProjects) {
+        for (MavenProject localProject : localProjects) {
             if (localProject.getArtifact().equals(artifact)) {
                 return true;
             }
@@ -174,14 +131,18 @@ public class ArtifactsLibraries implements Libraries {
         return false;
     }
 
-    private String getFileName(Artifact artifact) {
+    private static String createFileName(Artifact artifact) {
         StringBuilder sb = new StringBuilder();
-        sb.append(artifact.getArtifactId()).append("-").append(artifact.getBaseVersion());
+        sb.append(artifact.getGroupId()).append('-');
+        sb.append(artifact.getArtifactId()).append('-');
+        sb.append(artifact.getBaseVersion());
+
         String classifier = artifact.getClassifier();
         if (classifier != null) {
             sb.append("-").append(classifier);
         }
         sb.append(".").append(artifact.getArtifactHandler().getExtension());
+
         return sb.toString();
     }
 
@@ -193,29 +154,27 @@ public class ArtifactsLibraries implements Libraries {
         private final Artifact artifact;
 
         ArtifactLibraryCoordinates(Artifact artifact) {
-            this.artifact = artifact;
+            this.artifact = checkNotNull(artifact, "artifact is null");
         }
 
         @Override
         public String getGroupId() {
-            return this.artifact.getGroupId();
+            return artifact.getGroupId();
         }
 
         @Override
         public String getArtifactId() {
-            return this.artifact.getArtifactId();
+            return artifact.getArtifactId();
         }
 
         @Override
         public String getVersion() {
-            return this.artifact.getBaseVersion();
+            return artifact.getBaseVersion();
         }
 
         @Override
         public String toString() {
-            return this.artifact.toString();
+            return artifact.toString();
         }
-
     }
-
 }
