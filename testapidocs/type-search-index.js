@@ -1,1 +1,0 @@
-typeSearchIndex = [{"l":"All Classes","u":"allclasses-index.html"},{"p":"org.basepom.mojo.repack","l":"DependencyDefinitionTest"},{"p":"org.basepom.mojo.repack","l":"WildcardMatchingTest"}];updateSearchResults();
