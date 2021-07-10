@@ -23,7 +23,7 @@
 
     <groupId>org.basepom.maven</groupId>
     <artifactId>repack-maven-plugin</artifactId>
-    <version>0.1-SNAPSHOT</version>
+    <version>0.1</version>
     <packaging>maven-plugin</packaging>
 
     <inceptionYear>2021</inceptionYear>
@@ -54,7 +54,7 @@
     <scm>
         <connection>scm:git:git://github.com/basepom/repack-maven-plugin.git</connection>
         <developerConnection>scm:git:git://github.com/basepom/repack-maven-plugin.git</developerConnection>
-        <tag>HEAD</tag>
+        <tag>repack-maven-plugin-0.1</tag>
         <url>https://github.com/basepom/repack-maven-plugin</url>
     </scm>
 
