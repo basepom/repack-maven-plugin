@@ -1,0 +1,461 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RepackMojo.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">repack-maven-plugin</a> &gt; <a href="index.source.html" class="el_package">org.basepom.mojo.repack</a> &gt; <span class="el_source">RepackMojo.java</span></div><h1>RepackMojo.java</h1><pre class="source lang-java linenums">/*
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.basepom.mojo.repack;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.attribute.FileTime;
+import java.time.OffsetDateTime;
+import java.util.Arrays;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSet;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugins.annotations.Component;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
+import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.project.MavenProject;
+import org.apache.maven.project.MavenProjectHelper;
+import org.apache.maven.shared.artifact.filter.collection.ArtifactFilterException;
+import org.apache.maven.shared.artifact.filter.collection.FilterArtifacts;
+import org.springframework.boot.loader.tools.DefaultLaunchScript;
+import org.springframework.boot.loader.tools.LaunchScript;
+import org.springframework.boot.loader.tools.Layers;
+import org.springframework.boot.loader.tools.LayoutFactory;
+import org.springframework.boot.loader.tools.Libraries;
+import org.springframework.boot.loader.tools.Repackager;
+
+/**
+ * Repack archives for execution using {@literal java -jar}. Can also be used to repack a jar with nested dependencies by using &lt;code&gt;layout=NONE&lt;/code&gt;.
+ */
+@Mojo(name = &quot;repack&quot;, defaultPhase = LifecyclePhase.PACKAGE, requiresProject = true, threadSafe = true,
+        requiresDependencyResolution = ResolutionScope.COMPILE_PLUS_RUNTIME,
+        requiresDependencyCollection = ResolutionScope.COMPILE_PLUS_RUNTIME)
+<span class="nc" id="L58">public final class RepackMojo extends AbstractMojo {</span>
+
+<span class="nc" id="L60">    private static final Pattern WHITE_SPACE_PATTERN = Pattern.compile(&quot;\\s+&quot;);</span>
+
+<span class="nc" id="L62">    private static final PluginLog LOG = new PluginLog(RepackMojo.class);</span>
+
+    @Parameter(defaultValue = &quot;${project}&quot;, readonly = true, required = true)
+    public MavenProject project;
+
+    @Parameter(defaultValue = &quot;${session}&quot;, readonly = true, required = true)
+    public MavenSession session;
+
+    @Component
+    public MavenProjectHelper projectHelper;
+
+    /**
+     * The name of the main class. If not specified the first compiled class found that contains a {@code main} method will be used.
+     */
+<span class="nc" id="L76">    @Parameter(property = &quot;repack.main-class&quot;)</span>
+    public String mainClass = null;
+
+    /**
+     * Collection of artifact definitions to include.
+     */
+<span class="nc" id="L82">    @Parameter(alias = &quot;includes&quot;)</span>
+<span class="nc" id="L83">    public Set&lt;DependencyDefinition&gt; includedDependencies = ImmutableSet.of();</span>
+
+    /**
+     * Collection of artifact definitions to exclude.
+     */
+<span class="nc" id="L88">    @Parameter(alias = &quot;excludedDependencies&quot;)</span>
+<span class="nc" id="L89">    public Set&lt;DependencyDefinition&gt; excludedDependencies = ImmutableSet.of();</span>
+
+    /**
+     * Include system scoped dependencies.
+     */
+<span class="nc" id="L94">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.include-system-scope&quot;)</span>
+    public boolean includeSystemScope = false;
+
+    /**
+     * Include provided scoped dependencies.
+     */
+<span class="nc" id="L100">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.include-provided-scope&quot;)</span>
+    public boolean includeProvidedScope = false;
+
+    /**
+     * Include optional dependencies
+     */
+<span class="nc" id="L106">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.include-optional&quot;)</span>
+    public boolean includeOptional = false;
+
+    /**
+     * Directory containing the generated archive.
+     */
+    @Parameter(defaultValue = &quot;${project.build.directory}&quot;, required = true, property = &quot;repack.output-directory&quot;)
+    public File outputDirectory;
+
+    /**
+     * Name of the generated archive.
+     */
+    @Parameter(defaultValue = &quot;${project.build.finalName}&quot;, property = &quot;repack.final-name&quot;)
+    public String finalName;
+
+    /**
+     * Skip the execution.
+     */
+<span class="nc" id="L124">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.skip&quot;)</span>
+    public boolean skip = false;
+
+    /**
+     * Silence all non-output and non-error messages.
+     */
+<span class="nc" id="L130">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.quiet&quot;)</span>
+    public boolean quiet = false;
+
+    /**
+     * Do a summary report.
+     */
+<span class="nc" id="L136">    @Parameter(defaultValue = &quot;true&quot;, property = &quot;repack.report&quot;)</span>
+    public boolean report = true;
+
+    /**
+     * Classifier to add to the repacked archive. Use the blank string to replace the main artifact.
+     */
+<span class="nc" id="L142">    @Parameter(defaultValue = &quot;repacked&quot;, property = &quot;repack.classifier&quot;)</span>
+    public String repackClassifier = &quot;repacked&quot;;
+
+    /**
+     * Attach the repacked archive to the build cycle.
+     */
+<span class="nc" id="L148">    @Parameter(defaultValue = &quot;true&quot;, property = &quot;repack.artifact-attached&quot;)</span>
+    public boolean repackArtifactAttached = true;
+
+    /**
+     * A list of the libraries that must be unpacked at runtime (do not work within the fat jar).
+     */
+<span class="nc" id="L154">    @Parameter</span>
+<span class="nc" id="L155">    public Set&lt;DependencyDefinition&gt; runtimeUnpackedDependencies = ImmutableSet.of();</span>
+
+    /**
+     * A list of optional libraries that should be included even if optional dependencies are not included by default.
+     */
+<span class="nc" id="L160">    @Parameter</span>
+<span class="nc" id="L161">    public Set&lt;DependencyDefinition&gt; optionalDependencies = ImmutableSet.of();</span>
+
+    /**
+     * Make a fully executable jar for *nix machines by prepending a launch script to the jar.
+     * &lt;p&gt;
+     * Currently, some tools do not accept this format so you may not always be able to use this technique. For example, {@code jar -xf} may silently fail to
+     * extract a jar or war that has been made fully-executable. It is recommended that you only enable this option if you intend to execute it directly, rather
+     * than running it with {@code java -jar} or deploying it to a servlet container.
+     */
+<span class="nc" id="L170">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.executable&quot;)</span>
+    public boolean executable = false;
+
+    /**
+     * The embedded launch script to prepend to the front of the jar if it is fully executable. If not specified the 'Spring Boot' default script will be used.
+     */
+<span class="nc" id="L176">    @Parameter(property = &quot;repack.launch-script&quot;)</span>
+    public File launchScript = null;
+
+    /**
+     * If true, includes the same properties as the {@code spring-boot:repackage} goal (initInfoProvides, initInfoShortDescription, initInfoDescription).
+     * &lt;p&gt;Note that this is automatically set to true if the launch script name is unset (using the default launcher script).&lt;/p&gt;
+     */
+<span class="nc" id="L183">    @Parameter(defaultValue = &quot;false&quot;, property = &quot;repack.include-default-launch-script-properties&quot;)</span>
+    public boolean includeDefaultLaunchScriptProperties = false;
+
+    /**
+     * Additional properties that should be expanded in the launch script.
+     */
+<span class="nc" id="L189">    @Parameter</span>
+    public Properties launchScriptProperties = new Properties();
+
+    /**
+     * Timestamp for reproducible output archive entries, either formatted as ISO 8601 (&lt;code&gt;yyyy-MM-dd'T'HH:mm:ssXXX&lt;/code&gt;) or an {@code int} representing
+     * seconds since the epoch.
+     */
+    @Parameter(defaultValue = &quot;${project.build.outputTimestamp}&quot;, property = &quot;repack.output-timestamp&quot;)
+    public String outputTimestamp;
+
+    /**
+     * The type of archive (which corresponds to how the dependencies are laid out inside it). Possible values are {@code JAR}, {@code WAR}, {@code ZIP}, {@code
+     * DIR}, {@code NONE}. Defaults to {@code JAR}.
+     */
+<span class="nc" id="L203">    @Parameter(defaultValue = &quot;JAR&quot;, property = &quot;repack.layout&quot;)</span>
+    public LayoutType layout = LayoutType.JAR;
+
+    /**
+     * The layout factory that will be used to create the executable archive if no explicit layout is set. Alternative layouts implementations can be provided
+     * by 3rd parties.
+     */
+<span class="nc" id="L210">    @Parameter</span>
+    public LayoutFactory layoutFactory = null;
+
+    // called by maven
+    public void setIncludedDependencies(final String[] includedDependencies) {
+<span class="nc" id="L215">        checkNotNull(includedDependencies, &quot;includedDependencies is null&quot;);</span>
+
+<span class="nc" id="L217">        this.includedDependencies = Arrays.stream(includedDependencies)</span>
+<span class="nc" id="L218">                .map(DependencyDefinition::new)</span>
+<span class="nc" id="L219">                .collect(toImmutableSet());</span>
+<span class="nc" id="L220">    }</span>
+
+    // called by maven
+    public void setExcludedDependencies(final String[] excludedDependencies) {
+<span class="nc" id="L224">        checkNotNull(excludedDependencies, &quot;excludedDependencies is null&quot;);</span>
+
+<span class="nc" id="L226">        this.excludedDependencies = Arrays.stream(excludedDependencies)</span>
+<span class="nc" id="L227">                .map(DependencyDefinition::new)</span>
+<span class="nc" id="L228">                .collect(toImmutableSet());</span>
+<span class="nc" id="L229">    }</span>
+
+    // called by maven
+    public void setRuntimeUnpackedDependencies(final String[] runtimeUnpackedDependencies) {
+<span class="nc" id="L233">        checkNotNull(runtimeUnpackedDependencies, &quot;runtimeUnpackDependencies is null&quot;);</span>
+
+<span class="nc" id="L235">        this.runtimeUnpackedDependencies = Arrays.stream(runtimeUnpackedDependencies)</span>
+<span class="nc" id="L236">                .map(DependencyDefinition::new)</span>
+<span class="nc" id="L237">                .collect(toImmutableSet());</span>
+<span class="nc" id="L238">    }</span>
+
+    // called by maven
+    public void setOptionalDependencies(final String[] optionalDependencies) {
+<span class="nc" id="L242">        checkNotNull(optionalDependencies, &quot;optionalDependencies is null&quot;);</span>
+
+<span class="nc" id="L244">        this.optionalDependencies = Arrays.stream(optionalDependencies)</span>
+<span class="nc" id="L245">                .map(DependencyDefinition::new)</span>
+<span class="nc" id="L246">                .collect(toImmutableSet());</span>
+<span class="nc" id="L247">    }</span>
+
+    @Override
+    public void execute() throws MojoExecutionException {
+
+<span class="nc bnc" id="L252" title="All 2 branches missed.">        if (skip) {</span>
+<span class="nc" id="L253">            LOG.report(quiet, &quot;Skipping plugin execution&quot;);</span>
+<span class="nc" id="L254">            return;</span>
+        }
+
+<span class="nc bnc" id="L257" title="All 2 branches missed.">        if (&quot;pom&quot;.equals(project.getPackaging())) {</span>
+<span class="nc" id="L258">            LOG.report(quiet, &quot;Ignoring POM project&quot;);</span>
+<span class="nc" id="L259">            return;</span>
+        }
+
+<span class="nc bnc" id="L262" title="All 2 branches missed.">        checkState(this.outputDirectory != null, &quot;output directory was unset!&quot;);</span>
+<span class="nc" id="L263">        checkState(this.outputDirectory.exists(), &quot;output directory '%s' does not exist!&quot;, this.outputDirectory.getAbsolutePath());</span>
+
+<span class="nc bnc" id="L265" title="All 2 branches missed.">        if (this.finalName == null) {</span>
+<span class="nc" id="L266">            this.finalName = project.getArtifactId() + '-' + project.getVersion();</span>
+<span class="nc" id="L267">            LOG.report(quiet, &quot;Final name unset, falling back to %s&quot;, this.finalName);</span>
+        }
+
+<span class="nc bnc" id="L270" title="All 2 branches missed.">        if (repackClassifier.isEmpty()) {</span>
+<span class="nc bnc" id="L271" title="All 2 branches missed.">            if (project.getArtifact().getClassifier() == null) {</span>
+<span class="nc" id="L272">                LOG.report(quiet, &quot;Repacked archive will replace main artifact!&quot;);</span>
+            } else {
+<span class="nc" id="L274">                LOG.report(quiet, &quot;Repacked archive will have no classifier (main artifact has %s classifier)&quot;, project.getArtifact().getClassifier());</span>
+            }
+        } else {
+<span class="nc bnc" id="L277" title="All 2 branches missed.">            if (repackClassifier.equals(project.getArtifact().getClassifier())) {</span>
+<span class="nc" id="L278">                LOG.report(quiet, &quot;Repacked archive will replace main artifact with classifier %s!&quot;, repackClassifier);</span>
+            } else {
+<span class="nc" id="L280">                LOG.report(quiet, &quot;Repacked archive will use classifier '%s', main artifact has %s&quot;, repackClassifier,</span>
+<span class="nc bnc" id="L281" title="All 2 branches missed.">                        project.getArtifact().getClassifier() == null ? &quot;no classifier&quot; : &quot;classifier &quot; + project.getArtifact().getClassifier());</span>
+            }
+        }
+
+        try {
+<span class="nc" id="L286">            Artifact source = project.getArtifact();</span>
+
+<span class="nc" id="L288">            Repackager repackager = new Repackager(source.getFile());</span>
+
+<span class="nc bnc" id="L290" title="All 2 branches missed.">            if (!mainClass.isEmpty()) {</span>
+<span class="nc" id="L291">                repackager.setMainClass(mainClass);</span>
+            } else {
+<span class="nc" id="L293">                repackager.addMainClassTimeoutWarningListener(new LoggingMainClassTimeoutWarningListener());</span>
+            }
+
+<span class="nc bnc" id="L296" title="All 2 branches missed.">            if (layoutFactory != null) {</span>
+<span class="nc" id="L297">                LOG.report(quiet, &quot;Using %s Layout Factory to repack the %s artifact&quot;, layoutFactory.getClass().getSimpleName(), project.getArtifact());</span>
+<span class="nc" id="L298">                repackager.setLayoutFactory(layoutFactory);</span>
+<span class="nc bnc" id="L299" title="All 2 branches missed.">            } else if (layout != null) {</span>
+<span class="nc" id="L300">                LOG.report(quiet, &quot;Using %s Layout to repack the %s artifact&quot;, layout, project.getArtifact());</span>
+<span class="nc" id="L301">                repackager.setLayout(layout.layout());</span>
+            } else {
+<span class="nc" id="L303">                LOG.warn(&quot;Neither Layout Factory nor Layout defined, resulting JAR may be non-functional.&quot;);</span>
+            }
+
+<span class="nc" id="L306">            repackager.setLayers(Layers.IMPLICIT);</span>
+            // tools need spring framework dependencies which are not guaranteed to be there. So turn this off.
+<span class="nc" id="L308">            repackager.setIncludeRelevantJarModeJars(false);</span>
+
+<span class="nc" id="L310">            File targetFile = getTargetFile();</span>
+<span class="nc" id="L311">            Libraries libraries = getLibraries();</span>
+<span class="nc" id="L312">            LaunchScript launchScript = determineLaunchScript();</span>
+<span class="nc" id="L313">            FileTime outputFileTimestamp = parseOutputTimestamp();</span>
+
+<span class="nc" id="L315">            repackager.repackage(targetFile, libraries, launchScript, outputFileTimestamp);</span>
+
+<span class="nc" id="L317">            boolean repackReplacesSource = source.getFile().equals(targetFile);</span>
+
+<span class="nc bnc" id="L319" title="All 2 branches missed.">            if (repackArtifactAttached) {</span>
+<span class="nc bnc" id="L320" title="All 2 branches missed.">                if (repackReplacesSource) {</span>
+<span class="nc" id="L321">                    source.setFile(targetFile);</span>
+                } else {
+<span class="nc" id="L323">                    projectHelper.attachArtifact(project, project.getPackaging(), Strings.emptyToNull(repackClassifier), targetFile);</span>
+                }
+<span class="nc bnc" id="L325" title="All 4 branches missed.">            } else if (repackReplacesSource &amp;&amp; repackager.getBackupFile().exists()) {</span>
+<span class="nc" id="L326">                source.setFile(repackager.getBackupFile());</span>
+<span class="nc bnc" id="L327" title="All 2 branches missed.">            } else if (!repackClassifier.isEmpty()) {</span>
+<span class="nc" id="L328">                LOG.report(quiet, &quot;Created repacked archive %s with classifier %s!&quot;, targetFile, repackClassifier);</span>
+            }
+
+<span class="nc bnc" id="L331" title="All 2 branches missed.">            if (report) {</span>
+<span class="nc" id="L332">                Reporter.report(quiet, source, repackClassifier);</span>
+            }
+<span class="nc" id="L334">        } catch (IOException ex) {</span>
+<span class="nc" id="L335">            throw new MojoExecutionException(ex.getMessage(), ex);</span>
+<span class="nc" id="L336">        }</span>
+<span class="nc" id="L337">    }</span>
+
+    private File getTargetFile() {
+<span class="nc" id="L340">        StringBuilder targetFileName = new StringBuilder();</span>
+
+<span class="nc" id="L342">        targetFileName.append(finalName);</span>
+
+<span class="nc bnc" id="L344" title="All 2 branches missed.">        if (!repackClassifier.isEmpty()) {</span>
+<span class="nc" id="L345">            targetFileName.append('-').append(repackClassifier);</span>
+        }
+
+<span class="nc" id="L348">        targetFileName.append('.').append(project.getArtifact().getArtifactHandler().getExtension());</span>
+
+<span class="nc" id="L350">        return new File(outputDirectory, targetFileName.toString());</span>
+    }
+
+    /**
+     * Return {@link Libraries} that the packager can use.
+     */
+    private Libraries getLibraries() throws MojoExecutionException {
+
+        try {
+<span class="nc" id="L359">            Set&lt;Artifact&gt; artifacts = ImmutableSet.copyOf(project.getArtifacts());</span>
+<span class="nc" id="L360">            Set&lt;Artifact&gt; includedArtifacts = ImmutableSet.copyOf(buildFilters().filter(artifacts));</span>
+<span class="nc" id="L361">            return new ArtifactsLibraries(quiet, artifacts, includedArtifacts, session.getProjects(), runtimeUnpackedDependencies);</span>
+<span class="nc" id="L362">        } catch (ArtifactFilterException ex) {</span>
+<span class="nc" id="L363">            throw new MojoExecutionException(ex.getMessage(), ex);</span>
+        }
+    }
+
+    private FilterArtifacts buildFilters() {
+
+<span class="nc" id="L369">        FilterArtifacts filters = new FilterArtifacts();</span>
+
+        // remove all system scope artifacts
+<span class="nc bnc" id="L372" title="All 2 branches missed.">        if (!includeSystemScope) {</span>
+<span class="nc" id="L373">            filters.addFilter(new ScopeExclusionFilter(Artifact.SCOPE_SYSTEM));</span>
+        }
+
+        // remove all provided scope artifacts
+<span class="nc bnc" id="L377" title="All 2 branches missed.">        if (!includeProvidedScope) {</span>
+<span class="nc" id="L378">            filters.addFilter(new ScopeExclusionFilter(Artifact.SCOPE_PROVIDED));</span>
+        }
+
+        // if optionals are not included by default, filter out anything that is not included
+        // through a matcher
+<span class="nc bnc" id="L383" title="All 2 branches missed.">        if (!includeOptional) {</span>
+<span class="nc" id="L384">            filters.addFilter(new OptionalArtifactFilter(optionalDependencies));</span>
+        }
+
+        // add includes filter. If no includes are given, don't add a filter (everything is included)
+<span class="nc bnc" id="L388" title="All 2 branches missed.">        if (!includedDependencies.isEmpty()) {</span>
+            // an explicit include list given.
+<span class="nc" id="L390">            filters.addFilter(new DependencyDefinitionFilter(includedDependencies, true));</span>
+        }
+
+        // add excludes filter. If no excludes are given, don't add a filter (nothing gets excluded)
+<span class="nc bnc" id="L394" title="All 2 branches missed.">        if (!excludedDependencies.isEmpty()) {</span>
+<span class="nc" id="L395">            filters.addFilter(new DependencyDefinitionFilter(excludedDependencies, false));</span>
+        }
+
+<span class="nc" id="L398">        return filters;</span>
+    }
+
+    private FileTime parseOutputTimestamp() {
+        // Maven ignore a single-character timestamp as it is &quot;useful to override a full
+        // value during pom inheritance&quot;
+<span class="nc bnc" id="L404" title="All 4 branches missed.">        if (outputTimestamp == null || outputTimestamp.length() &lt; 2) {</span>
+<span class="nc" id="L405">            return null;</span>
+        }
+
+        long timestamp;
+
+        try {
+<span class="nc" id="L411">            timestamp = Long.parseLong(outputTimestamp);</span>
+<span class="nc" id="L412">        } catch (NumberFormatException ex) {</span>
+<span class="nc" id="L413">            timestamp = OffsetDateTime.parse(outputTimestamp).toInstant().getEpochSecond();</span>
+<span class="nc" id="L414">        }</span>
+
+<span class="nc" id="L416">        return FileTime.from(timestamp, TimeUnit.SECONDS);</span>
+    }
+
+    private LaunchScript determineLaunchScript() throws IOException {
+
+<span class="nc bnc" id="L421" title="All 2 branches missed.">        if (launchScript != null) {</span>
+<span class="nc" id="L422">            LOG.report(quiet, &quot;Using custom launch script: %s&quot;, launchScript);</span>
+<span class="nc" id="L423">            return new DefaultLaunchScript(launchScript, buildLaunchScriptProperties());</span>
+<span class="nc bnc" id="L424" title="All 2 branches missed.">        } else if (executable) {</span>
+<span class="nc" id="L425">            LOG.report(quiet, &quot;Using default 'launch.script',%n&quot; +</span>
+                    &quot;see https://docs.spring.io/spring-boot/docs/current/reference/html/deployment.html#deployment.installing.nix-services.script-customization for additional customization information&quot;);
+<span class="nc" id="L427">            return new DefaultLaunchScript(null, buildLaunchScriptProperties());</span>
+        } else {
+<span class="nc" id="L429">            return null;</span>
+        }
+    }
+
+    private Properties buildLaunchScriptProperties() {
+<span class="nc" id="L434">        Properties properties = new Properties(launchScriptProperties);</span>
+
+<span class="nc bnc" id="L436" title="All 4 branches missed.">        if (launchScript == null || includeDefaultLaunchScriptProperties) {</span>
+<span class="nc" id="L437">            putIfMissing(properties, &quot;initInfoProvides&quot;, project.getArtifactId());</span>
+<span class="nc" id="L438">            putIfMissing(properties, &quot;initInfoShortDescription&quot;, project.getName(), project.getArtifactId());</span>
+<span class="nc" id="L439">            putIfMissing(properties, &quot;initInfoDescription&quot;, removeLineBreaks(project.getDescription()), project.getName(), project.getArtifactId());</span>
+        }
+<span class="nc" id="L441">        return properties;</span>
+    }
+
+    private String removeLineBreaks(String description) {
+<span class="nc bnc" id="L445" title="All 2 branches missed.">        return (description != null)</span>
+<span class="nc" id="L446">                ? WHITE_SPACE_PATTERN.matcher(description).replaceAll(&quot; &quot;)</span>
+<span class="nc" id="L447">                : null;</span>
+    }
+
+    private void putIfMissing(Properties properties, String key, String... valueCandidates) {
+<span class="nc bnc" id="L451" title="All 2 branches missed.">        if (!properties.containsKey(key)) {</span>
+<span class="nc bnc" id="L452" title="All 2 branches missed.">            for (String candidate : valueCandidates) {</span>
+<span class="nc bnc" id="L453" title="All 4 branches missed.">                if (candidate != null &amp;&amp; !candidate.isEmpty()) {</span>
+<span class="nc" id="L454">                    properties.put(key, candidate);</span>
+<span class="nc" id="L455">                    return;</span>
+                }
+            }
+        }
+<span class="nc" id="L459">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.7.202105040129</span></div></body></html>

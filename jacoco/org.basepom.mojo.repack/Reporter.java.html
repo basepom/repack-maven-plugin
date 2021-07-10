@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Reporter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">repack-maven-plugin</a> &gt; <a href="index.source.html" class="el_package">org.basepom.mojo.repack</a> &gt; <span class="el_source">Reporter.java</span></div><h1>Reporter.java</h1><pre class="source lang-java linenums">/*
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.basepom.mojo.repack;
+
+import static java.lang.String.format;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.SortedMap;
+import java.util.function.BiConsumer;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSortedMap;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.shared.utils.logging.MessageBuilder;
+import org.apache.maven.shared.utils.logging.MessageUtils;
+
+<span class="nc" id="L32">final class Reporter {</span>
+
+<span class="nc" id="L34">    private static final PluginLog LOG = new PluginLog(Reporter.class);</span>
+
+<span class="nc" id="L36">    private static final Set&lt;Artifact&gt; runtimeUnpackedArtifacts = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L37">    private static final Set&lt;Artifact&gt; optionalArtifacts = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L38">    private static final Map&lt;Artifact, String&gt; excludedArtifacts = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L39">    private static final Set&lt;Artifact&gt; includedArtifacts = new HashSet&lt;&gt;();</span>
+
+
+    static void addRuntimeUnpacked(Artifact artifact) {
+<span class="nc" id="L43">        runtimeUnpackedArtifacts.add(artifact);</span>
+<span class="nc" id="L44">    }</span>
+
+    static void addOptional(Artifact artifact) {
+<span class="nc" id="L47">        optionalArtifacts.add(artifact);</span>
+<span class="nc" id="L48">    }</span>
+
+    static void addExcluded(Artifact artifact, String reason) {
+<span class="nc" id="L51">        excludedArtifacts.put(artifact, reason);</span>
+<span class="nc" id="L52">    }</span>
+
+    static void addIncluded(Artifact artifact) {
+<span class="nc" id="L55">        includedArtifacts.add(artifact);</span>
+<span class="nc" id="L56">    }</span>
+
+    public static void report(boolean quiet, Artifact source, String classifier) {
+
+<span class="nc" id="L60">        LOG.report(quiet, &quot;&quot;);</span>
+<span class="nc" id="L61">        header(quiet, format(Locale.ROOT, &quot;Summary Report for: %s:%s (%s)&quot;, source.getGroupId(), source.getArtifactId(), classifier));</span>
+<span class="nc" id="L62">        LOG.report(quiet, &quot;&quot;);</span>
+
+<span class="nc" id="L64">        header(quiet, &quot;Included dependencies (&quot; + includedArtifacts.size() + &quot;)&quot;);</span>
+<span class="nc" id="L65">        logReport(quiet, includedArtifacts, (messageBuilder, artifact) -&gt; messageBuilder.strong(artifact.getScope()));</span>
+
+<span class="nc" id="L67">        header(quiet, &quot;Included optional dependencies (&quot; + optionalArtifacts.size() + &quot;)&quot;);</span>
+<span class="nc" id="L68">        logReport(quiet, optionalArtifacts, null);</span>
+
+<span class="nc" id="L70">        header(quiet, &quot;Excluded dependencies (&quot; + excludedArtifacts.size() + &quot;)&quot;);</span>
+<span class="nc" id="L71">        logReport(quiet, excludedArtifacts.keySet(), (messageBuilder, artifact) -&gt; messageBuilder.strong(excludedArtifacts.get(artifact)));</span>
+
+<span class="nc" id="L73">        header(quiet, &quot;Runtime unpacked dependencies (&quot; + runtimeUnpackedArtifacts.size() + &quot;)&quot;);</span>
+<span class="nc" id="L74">        logReport(quiet, runtimeUnpackedArtifacts, null);</span>
+<span class="nc" id="L75">    }</span>
+
+    private static void header(boolean quiet, String value) {
+<span class="nc" id="L78">        LOG.report(quiet, value);</span>
+<span class="nc" id="L79">        LOG.report(quiet, Strings.repeat(&quot;=&quot;, value.length()));</span>
+<span class="nc" id="L80">    }</span>
+
+    private static void logReport(boolean quiet, Set&lt;Artifact&gt; artifacts, BiConsumer&lt;MessageBuilder, Artifact&gt; consumer) {
+<span class="nc bnc" id="L83" title="All 2 branches missed.">        if (!artifacts.isEmpty()) {</span>
+<span class="nc" id="L84">            SortedMap&lt;String, Artifact&gt; names = computeNames(artifacts);</span>
+<span class="nc" id="L85">            final int namePadding = names.keySet().stream().map(String::length).reduce(0, Math::max);</span>
+
+<span class="nc bnc" id="L87" title="All 2 branches missed.">            for (Map.Entry&lt;String, Artifact&gt; entry : names.entrySet()) {</span>
+<span class="nc" id="L88">                final MessageBuilder mb = MessageUtils.buffer();</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">                if (consumer == null) {</span>
+<span class="nc" id="L90">                    mb.a(entry.getKey());</span>
+                } else {
+<span class="nc" id="L92">                    mb.a(Strings.padEnd(entry.getKey() + ':', namePadding + 2, ' '));</span>
+<span class="nc" id="L93">                    consumer.accept(mb, entry.getValue());</span>
+                }
+<span class="nc" id="L95">                LOG.report(quiet, &quot;%s&quot;, mb);</span>
+<span class="nc" id="L96">            }</span>
+        }
+<span class="nc" id="L98">        LOG.report(quiet, &quot;&quot;);</span>
+<span class="nc" id="L99">    }</span>
+
+    private static SortedMap&lt;String, Artifact&gt; computeNames(Set&lt;Artifact&gt; artifacts) {
+<span class="nc" id="L102">        ImmutableSortedMap.Builder&lt;String, Artifact&gt; builder = ImmutableSortedMap.naturalOrder();</span>
+<span class="nc" id="L103">        artifacts.forEach(a -&gt; builder.put(a.getGroupId() + ':' + a.getArtifactId(), a));</span>
+<span class="nc" id="L104">        return builder.build();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.7.202105040129</span></div></body></html>
