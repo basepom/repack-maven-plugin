@@ -287,7 +287,7 @@ public final class RepackMojo extends AbstractMojo {
 
             Repackager repackager = new Repackager(source.getFile());
 
-            if (!mainClass.isEmpty()) {
+            if (mainClass != null && !mainClass.isEmpty()) {
                 repackager.setMainClass(mainClass);
             } else {
                 repackager.addMainClassTimeoutWarningListener(new LoggingMainClassTimeoutWarningListener());

@@ -18,7 +18,7 @@
     <parent>
         <groupId>org.basepom</groupId>
         <artifactId>basepom-oss</artifactId>
-        <version>39</version>
+        <version>40</version>
     </parent>
 
     <groupId>org.basepom.maven</groupId>
@@ -64,12 +64,14 @@
     </issueManagement>
 
     <properties>
-        <project.build.systemJdk>11</project.build.systemJdk>
+        <!-- require at least java 12 to fix javadoc bug -->
+        <project.build.systemJdk>12</project.build.systemJdk>
         <project.build.targetJdk>8</project.build.targetJdk>
 
         <maven.site.deploy.skip>true</maven.site.deploy.skip>
         <!-- site requires full javadoc generation -->
         <basepom.javadoc.skip>false</basepom.javadoc.skip>
+        <basepom.javadoc.show>package</basepom.javadoc.show>
 
         <dep.maven-api.version>3.6.3</dep.maven-api.version>
         <dep.maven-artifact-filter.version>3.2.0</dep.maven-artifact-filter.version>
@@ -79,7 +81,6 @@
         <dep.guava.version>30.1.1-jre</dep.guava.version>
         <dep.junit5.version>5.7.2</dep.junit5.version>
 
-        <dep.plugin.jxr.version>3.0.0</dep.plugin.jxr.version>
         <dep.plugin.scm-publish.version>3.1.0</dep.plugin.scm-publish.version>
     </properties>
 
@@ -290,6 +291,7 @@
                     </dependency>
                 </dependencies>
             </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-scm-publish-plugin</artifactId>
@@ -318,49 +320,29 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-project-info-reports-plugin</artifactId>
-                <version>3.1.1</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-plugin-plugin</artifactId>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-report-plugin</artifactId>
-                <version>${dep.plugin.surefire.version}</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-checkstyle-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jxr-plugin</artifactId>
-                <version>${dep.plugin.jxr.version}</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-pmd-plugin</artifactId>
+                <!-- don't do test javadoc and xrefs -->
+                <artifactId>maven-javadoc-plugin</artifactId>
                 <reportSets>
                     <reportSet>
+                        <id>default</id>
                         <reports>
-                            <report>pmd</report>
+                            <report>javadoc</report>
                         </reports>
                     </reportSet>
                 </reportSets>
             </plugin>
             <plugin>
-                <groupId>com.github.spotbugs</groupId>
-                <artifactId>spotbugs-maven-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.jacoco</groupId>
-                <artifactId>jacoco-maven-plugin</artifactId>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jxr-plugin</artifactId>
                 <reportSets>
                     <reportSet>
+                        <id>default</id>
                         <reports>
-                            <report>report</report>
+                            <report>jxr</report>
                         </reports>
                     </reportSet>
                 </reportSets>
